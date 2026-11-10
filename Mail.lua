@@ -145,7 +145,7 @@ local function LeavingLine(key)
 	local entry = Account().letters[key]
 	local leaves = type(entry) == "table" and tonumber(entry.leaves)
 	local now = time()
-	if not (leaves and leaves > now) then return nil end
+	if not (leaves and leaves > now and leaves - now <= SOON_OTHERS * DAY) then return nil end
 	local count = tonumber(entry.count) or 1
 	local words = (count == 1 and L.CHARACTER_LETTER_ONE or L.CHARACTER_LETTERS):format(U.Ago(leaves - now))
 	local c = Skin.COLORS.warn
@@ -212,7 +212,7 @@ local card -- the card beside the mailbox (below)
 -- (one letter, Shift+click), or false
 local running = false
 local taken = { items = 0, refused = 0, done = 0, total = 0 } -- and start: your gold when it began
-local tries = {} -- "kind:index:slot" -> times asked, during one run
+local tries = {} -- TryKey -> times asked, during one run
 local unique = {} -- "index:slot" -> true: an item the game would not give (unique, a limit), during one run
 local only -- the letter a Shift+click takes: { index, sender, subject }
 local goOn -- a take ended with letters kept on the server: { mode, shown } (the inbox as it ended), fresh once more came
@@ -400,10 +400,16 @@ function Letters()
 	return shown, math.max(shown, Clean(total) or 0)
 end
 
+-- What a try is counted under: its place and its letter (a letter gone, the next one takes its index: its own count).
+local function TryKey(kind, index, value)
+	local _, _, sender, subject = Safe(GetInboxHeaderInfo, index)
+	return kind .. ":" .. index .. ":" .. value .. ":" .. tostring(Clean(sender)) .. ":" .. tostring(Clean(subject))
+end
+
 -- The next thing to take; an item without room in your bags waits.
 local function NextTake()
 	local function Again(kind, index, value)
-		return (tries[kind .. ":" .. index .. ":" .. value] or 0) < MAX_TRIES
+		return (tries[TryKey(kind, index, value)] or 0) < MAX_TRIES
 	end
 	for _, index in ipairs(Order()) do
 		if Wanted(running, Kind(index), index) then
@@ -441,14 +447,14 @@ local function Step(mine)
 	ShowProgress()
 	local kind, index, value = NextTake()
 	if not kind then return Finish(true) end
-	local key = kind .. ":" .. index .. ":" .. value
+	local key = TryKey(kind, index, value)
 	tries[key] = (tries[key] or 0) + 1
 	if kind == "money" then
 		Safe(TakeInboxMoney, index)
 		if tries[key] == 1 then taken.done = taken.done + 1 end
 	else
 		-- (known before asking: the game's refusal may come at once)
-		pending = { index, value, letters = Letters(), waits = 0, at = GetTime() }
+		pending = { index, value, key = key, letters = Letters(), waits = 0, at = GetTime() }
 		Safe(TakeInboxItem, index, value)
 	end
 	C_Timer.After(STEP, function() Step(mine) end)
@@ -477,7 +483,7 @@ function ns.Refused(message)
 		taken.noRoom = true
 		-- (that item not asked again: only a stack could take it, and the game said no)
 		if pending and not pending.refused then
-			tries["item:" .. pending[1] .. ":" .. pending[2]] = MAX_TRIES
+			tries[pending.key] = MAX_TRIES
 			pending.refused = true
 		end
 		return
@@ -485,7 +491,7 @@ function ns.Refused(message)
 	-- (only right after the item was asked for: a refusal of something else is not this one's)
 	if pending and not pending.refused and GetTime() - (pending.at or 0) <= REFUSAL_WAIT and IsRefusal(message) then
 		-- (never asked again this run)
-		tries["item:" .. pending[1] .. ":" .. pending[2]] = MAX_TRIES
+		tries[pending.key] = MAX_TRIES
 		unique[pending[1] .. ":" .. pending[2]] = true
 		pending.refused = true
 		taken.refused = taken.refused + 1
@@ -665,6 +671,7 @@ end
 
 local function BuildCard()
 	card = Skin.CreateWindow("WandererMailCard", "MEDIUM", MailFrame)
+	if Skin.PadWindow then Skin.PadWindow(card, { side = true }) end
 	card:SetWidth(CARD_WIDTH)
 	card:EnableMouse(true)
 	-- Beside the mailbox, or beside the letter you read (the game opens it at the mailbox's right): never over it.
