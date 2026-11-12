@@ -27,7 +27,6 @@ local MAX_SEND = 12 -- attachments of a letter you write
 -- The sender words of the letters bringing back the loot Forever keeps for you (lower case, part of the name):
 -- they make their own block. Learned in game with /wmail dump; a sender not here: a player's letter, as before.
 local LOST_SENDERS = { "lost and found" }
-ns.LOST_SENDERS = LOST_SENDERS -- (tests)
 
 local function Settings() return W and W.Settings and W.Settings("mail") or nil end
 local function On()
@@ -81,7 +80,6 @@ local function RecordLetters()
 	local told = type(letters[key]) == "table" and letters[key].told or nil
 	letters[key] = { leaves = time() + math.floor(soonest * DAY), count = count, told = told }
 end
-ns.RecordLetters = RecordLetters
 
 -- The others' letters leaving soon: { { name, leaves, count, key } }, the soonest first. Those gone already, or
 -- of a character forgotten, let go.
@@ -524,7 +522,6 @@ ns.StartTaking = Start -- (tests)
 
 -- (the game's own Shift+click, taking a letter, on the clients that have it)
 local function GameTakesOnClick() return rawget(_G, "AutoLootMailItem") ~= nil or rawget(_G, "InboxFrame_OnModifiedClick") ~= nil end
-ns.GameTakesOnClick = GameTakesOnClick -- (tests)
 
 local function TakeLetter(index)
 	local _, _, sender, subject, _, cod = Safe(GetInboxHeaderInfo, index)
@@ -566,6 +563,13 @@ function ns.LetterClicked(index)
 	elseif Clean(Safe(IsControlKeyDown)) then
 		AskReturn(index)
 	end
+end
+
+-- The letter open beside the mailbox (its place in the inbox), else nil.
+function ns.OpenLetter()
+	local letter = _G.OpenMailFrame
+	if not (letter and letter:IsShown() and InboxFrame) then return nil end
+	return tonumber(Clean(InboxFrame.openMailID))
 end
 
 -- The game's own button, when this version of the game has one.
@@ -675,16 +679,28 @@ local function BuildCard()
 	card:SetWidth(CARD_WIDTH)
 	card:EnableMouse(true)
 	-- Beside the mailbox, or beside the letter you read (the game opens it at the mailbox's right): never over it.
+	-- (Wanderer's placing from its API 21: on the left when the screen's right has no room, the game's windows
+	-- never moved)
 	local function Place()
 		local letter = _G.OpenMailFrame
-		local beside = letter and letter:IsShown() and letter or MailFrame
+		local reading = letter and letter:IsShown()
+		local beside = reading and letter or MailFrame
+		if (W.API or 1) >= 21 and Skin.Beside then
+			Skin.Beside(card, beside, CARD_WIDTH, 6, card:GetHeight() or 0, { still = true, holder = reading and MailFrame or nil })
+			return
+		end
 		card:ClearAllPoints()
 		card:SetPoint("TOPLEFT", beside, "TOPRIGHT", 6, 0)
 	end
 	Place()
 	if _G.OpenMailFrame then
-		_G.OpenMailFrame:HookScript("OnShow", Place)
-		_G.OpenMailFrame:HookScript("OnHide", Place)
+		-- (the letter read: its own buttons on the card, a moment after the game names it)
+		local function Letter()
+			Place()
+			C_Timer.After(0, function() if card and card:IsShown() then Summarize() end end)
+		end
+		_G.OpenMailFrame:HookScript("OnShow", Letter)
+		_G.OpenMailFrame:HookScript("OnHide", Letter)
 	end
 	local _, _, margin = Skin.Header(card, "Wanderer", L.CARD_TITLE, { settings = "ext:mail" })
 	card.margin = margin
@@ -703,13 +719,31 @@ local function BuildCard()
 	card.auction = Block(L.AH_BLOCK, function() Start("auction") end, L.TAKE_AUCTION_DESC)
 	card.players = Block(L.PLAYERS_BLOCK, function() Start("players") end, function()
 		-- (the shortcuts on the letters told here, Shift+click only where the game has none)
+		-- (a controller: the letter's own buttons on this card instead)
+		local pad = U.UsingPad and U.UsingPad()
 		local hints = { L.TAKE_PLAYERS_DESC }
-		if not GameTakesOnClick() then hints[#hints + 1] = L.HINT_TAKE end
-		hints[#hints + 1] = L.HINT_RETURN
+		if pad or not GameTakesOnClick() then hints[#hints + 1] = pad and L.HINT_TAKE_PAD or L.HINT_TAKE end
+		hints[#hints + 1] = pad and L.HINT_RETURN_PAD or L.HINT_RETURN
 		return table.concat(hints, "\n")
 	end)
 	-- The loot Forever kept for you, sent by mail.
 	card.lost = Block(L.LOST_BLOCK, function() Start("lost") end, L.TAKE_LOST_DESC)
+	-- The letter you read: taken, or sent back (asked first), as Shift+click and Ctrl+click on it do (a controller
+	-- has neither).
+	card.letter = CreateFrame("Frame", nil, card)
+	card.letter:SetHeight(26)
+	card.letterTake = Skin.Button(card.letter, L.LETTER_TAKE, function()
+		local index = ns.OpenLetter()
+		if index and not running then TakeLetter(index) end
+	end)
+	card.letterTake:SetHeight(26)
+	Skin.Tooltip(card.letterTake, function() return (U.UsingPad and U.UsingPad()) and L.LETTER_TAKE_DESC_PAD or L.LETTER_TAKE_DESC end, "ANCHOR_RIGHT")
+	card.letterBack = Skin.Button(card.letter, L.LETTER_RETURN, function()
+		local index = ns.OpenLetter()
+		if index and not running then AskReturn(index) end
+	end)
+	card.letterBack:SetHeight(26)
+	Skin.Tooltip(card.letterBack, function() return (U.UsingPad and U.UsingPad()) and L.LETTER_RETURN_DESC_PAD or L.LETTER_RETURN_DESC end, "ANCHOR_RIGHT")
 	-- The next letters the server brought, after a take that left some there.
 	card.goOn = Skin.Button(card, L.GO_ON, function()
 		local mode = goOn and goOn.mode
@@ -852,6 +886,35 @@ function Summarize()
 	if auctionShown then pieces[#pieces + 1] = { card.auction, GAP } end
 	if lostShown then pieces[#pieces + 1] = { card.lost, GAP } end
 	if playersShown then pieces[#pieces + 1] = { card.players, GAP } end
+	-- The letter you read: "Take it" when it holds something (not to pay on delivery), "Send it back" for a player's.
+	local reading = buttons and ns.OpenLetter()
+	local canTake, canBack = false, false
+	if reading then
+		local _, _, _, _, money, cod, _, itemCount = Safe(GetInboxHeaderInfo, reading)
+		canTake = (Clean(cod) or 0) == 0 and ((Clean(money) or 0) > 0 or (Clean(itemCount) or 0) > 0)
+		canBack = CanReturn(reading) and true or false
+	end
+	card.letter:SetShown(canTake or canBack)
+	if canTake or canBack then
+		card.letterTake:SetShown(canTake)
+		card.letterBack:SetShown(canBack)
+		card.letterTake:ClearAllPoints()
+		card.letterBack:ClearAllPoints()
+		-- (side by side, or one across the card)
+		if canTake and canBack then
+			card.letterTake:SetPoint("TOPLEFT")
+			card.letterTake:SetPoint("TOPRIGHT", card.letter, "TOP", -3, 0)
+			card.letterBack:SetPoint("TOPLEFT", card.letter, "TOP", 3, 0)
+			card.letterBack:SetPoint("TOPRIGHT")
+		else
+			local shown = canTake and card.letterTake or card.letterBack
+			shown:SetPoint("TOPLEFT")
+			shown:SetPoint("TOPRIGHT")
+		end
+		card.letterTake:SetEnabled(not running)
+		card.letterBack:SetEnabled(not running)
+		pieces[#pieces + 1] = { card.letter, GAP }
+	end
 	-- Going on past the 50 letters shown: offered once the server brought more, while some are left to take.
 	-- (the fewest seen since it ended: the last letters taken leave a moment after)
 	if goOn and not goOn.fresh then
@@ -1018,13 +1081,15 @@ local function Pick(name)
 	if not box then return end
 	box:SetText(name)
 	local subject = _G.SendMailSubjectEditBox
-	if subject and subject.SetFocus then Safe(subject.SetFocus, subject) end
+	-- (a subject is written with a keyboard: the controller keeps its own navigation)
+	if subject and subject.SetFocus and not (U.UsingPad and U.UsingPad()) then Safe(subject.SetFocus, subject) end
 end
 
 local function ClassColor(class)
 	local r, g, b = U.ClassColor(class)
 	if r then return r, g, b end
-	return 1, 0.82, 0
+	local gold = Skin.COLORS.gold
+	return gold[1], gold[2], gold[3]
 end
 
 -- The list of who to write to, as Postal and ElvUI offer it: a small arrow at the end of the name's field opens a
@@ -1261,6 +1326,8 @@ function ns.Init()
 		if event == "MAIL_INBOX_UPDATE" or event == "BAG_UPDATE_DELAYED" then return refreshSoon() end
 		ns.Refresh()
 	end)
+	-- Wanderer's town card: its mailbox line (Town.lua).
+	if ns.InitTown then ns.InitTown() end
 	-- At login, a moment after arriving (once): the letters of the others leaving soon.
 	local arrival = CreateFrame("Frame")
 	arrival:RegisterEvent("PLAYER_ENTERING_WORLD")

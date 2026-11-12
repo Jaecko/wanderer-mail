@@ -7,7 +7,9 @@ local L = ns.L
 local W = Wanderer
 local U = W and W.Util
 
-if W and W.TownLine and U then
+-- (Init only, once Wanderer's check has passed)
+function ns.InitTown()
+	if not (W.TownLine and U) then return end
 	W.TownLine(function()
 		local newMail = U.Clean(U.Safe(HasNewMail)) and true or false
 		local leaves = ns.OwnLeaving()
