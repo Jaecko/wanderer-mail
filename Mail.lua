@@ -201,7 +201,21 @@ local function Kind(index)
 	if IsLost(sender) then return "lost" end
 	return "player"
 end
-ns.LetterKind = Kind -- (tests)
+ns.LetterKind = Kind
+
+-- The group a letter stands in, in Wanderer's mailbox: "auction" (the auction house's), "players" (a player's,
+-- one to pay on delivery too), or "others" (the game's own letters: a game master's, a city's, the kept loot,
+-- any letter that cannot be answered).
+local function Group(index, kind)
+	kind = kind or Kind(index)
+	if AUCTION[kind] then return "auction" end
+	if kind == "cod" then return "players" end
+	if kind == "lost" then return "others" end
+	local canReply, isGM = select(12, Safe(GetInboxHeaderInfo, index))
+	if Clean(isGM) or Clean(canReply) == false then return "others" end
+	return "players"
+end
+ns.LetterGroup = Group
 
 -- Taking --------------------------------------------------------------------------------------------------
 
@@ -227,13 +241,29 @@ local function SameLetter(index, sender, subject)
 	return Clean(nowSender) == sender and Clean(nowSubject) == subject
 end
 
--- The letters a take looks at: all of them, the auction house's, the players', the kept loot, one letter;
--- never one to pay on delivery.
+-- The item an auction house's letter speaks of, read in its subject ("Auction successful: Linen Cloth"), else nil.
+function ns.SubjectItem(subject)
+	subject = Clean(subject)
+	if type(subject) ~= "string" then return nil end
+	for _, known in ipairs(Patterns()) do
+		local item = subject:match(known[2])
+		if item and item ~= "" then return item end
+	end
+	return nil
+end
+
+-- The letters a take looks at: all of them, the auction house's, the players', the kept loot, one letter; in
+-- Wanderer's mailbox, a group's ("people": the players', "others": the game's own); never one to pay on delivery,
+-- nor a game master's in a take of many (the game's own "Open all" leaves it too: taken one letter at a time).
+local function FromGM(index) return Clean((select(13, Safe(GetInboxHeaderInfo, index)))) and true or false end
 local function Wanted(mode, kind, index)
 	if kind == "cod" then return false end
+	if mode ~= "letter" and FromGM(index) then return false end
 	if mode == "auction" then return AUCTION[kind] or false end
 	if mode == "players" then return kind == "player" end
 	if mode == "lost" then return kind == "lost" end
+	if mode == "people" then return Group(index, kind) == "players" end
+	if mode == "others" then return Group(index, kind) == "others" end
 	if mode == "letter" then return only ~= nil and index == only[1] and SameLetter(index, only[2], only[3]) end
 	return true
 end
@@ -254,6 +284,7 @@ local function Pieces(mode)
 	end
 	return count
 end
+ns.Pieces = Pieces
 
 -- Room in your bags -------------------------------------------------------------------------------------------
 -- Before each item: a free place beyond the one kept, or a stack of the same item with room enough; else the item
@@ -335,6 +366,12 @@ local function SetRunning(mode)
 	ShowProgress()
 end
 
+-- What a take is doing, for Wanderer's mailbox: its mode (false: none), how far (done, of total).
+function ns.Running() return running end
+function ns.Progress() return math.min(taken.done, taken.total), taken.total end
+-- (Wanderer's mailbox drawn again as a take goes: Window.lua sets it)
+local function TakeChanged() if ns.TakeChanged then ns.TakeChanged() end end
+
 -- The server brings the letters beyond 50 when it refreshes the inbox, once a minute at most (an earlier ask is
 -- not answered): asked again now and then while the card waits for them, until they come, another take starts
 -- or the mailbox closes. Reading only: nothing is taken before the click on "Go on".
@@ -387,7 +424,7 @@ local function Finish(natural)
 		end
 	end
 	only = nil
-	ns.lastResult = table.concat(result, U.SEPARATOR) -- (tests)
+	ns.lastResult = table.concat(result, U.SEPARATOR)
 	Said(ns.lastResult)
 end
 
@@ -397,6 +434,7 @@ function Letters()
 	shown = Clean(shown) or 0
 	return shown, math.max(shown, Clean(total) or 0)
 end
+ns.Letters = function() return Letters() end
 
 -- What a try is counted under: its place and its letter (a letter gone, the next one takes its index: its own count).
 local function TryKey(kind, index, value)
@@ -497,6 +535,21 @@ function ns.Refused(message)
 	end
 end
 
+-- Going on past the 50 letters shown, after a take that left some on the server: offered once the server brought
+-- more, while some are left to take (letters: those shown now; the fewest seen since it ended counts, the last
+-- letters taken leave a moment after).
+local function GoOnOffered(letters)
+	if goOn and not goOn.fresh then
+		if letters > goOn.shown then goOn.fresh = true else goOn.shown = letters end
+	end
+	return not running and goOn ~= nil and goOn.fresh and Pieces(goOn.mode) > 0 or false
+end
+function ns.GoOnOffered() return GoOnOffered((Letters())) end
+function ns.GoOn()
+	local mode = goOn and goOn.mode
+	if mode and not running then ns.StartTaking(mode) end
+end
+
 -- A take started (a click on one of the card's buttons); a click on it again stops it.
 local function Start(mode)
 	if running then return Finish() end
@@ -529,6 +582,8 @@ local function TakeLetter(index)
 	only = { index, Clean(sender), Clean(subject) }
 	Start("letter")
 end
+ns.TakeLetter = TakeLetter
+ns.SameLetter = SameLetter
 
 -- A letter that can go back: a player's (not the game's, the auction house's, nor one already sent back).
 local function CanReturn(index)
@@ -549,8 +604,10 @@ local function AskReturn(index)
 		Safe(rawget(_G, "ReturnInboxItem"), index)
 		local letter = _G.OpenMailFrame
 		if letter and letter:IsShown() and InboxFrame and InboxFrame.openMailID == index then letter:Hide() end
+		if ns.TakeChanged then ns.TakeChanged() end
 	end)
 end
+ns.CanReturn, ns.AskReturn = CanReturn, AskReturn
 
 local ButtonsOn -- (below)
 
@@ -583,6 +640,12 @@ function ButtonsOn()
 	local settings = Settings()
 	return On() and settings.buttons ~= false and not ns.OtherButtons()
 end
+
+-- Wanderer's mailbox in use at this mailbox (Window.lua), else false.
+local function InWindow() return ns.WindowInUse ~= nil and ns.WindowInUse() or false end
+
+-- A take may go on: the card's buttons are there, or Wanderer's mailbox is the one used.
+function ns.TakesOn() return On() and (InWindow() or ButtonsOn()) end
 
 -- The card beside the mailbox ---------------------------------------------------------------------------------
 -- A Wanderer card at the mailbox's right, as high as its content: what the inbox holds (the letters, the gold
@@ -745,10 +808,7 @@ local function BuildCard()
 	card.letterBack:SetHeight(26)
 	Skin.Tooltip(card.letterBack, function() return (U.UsingPad and U.UsingPad()) and L.LETTER_RETURN_DESC_PAD or L.LETTER_RETURN_DESC end, "ANCHOR_RIGHT")
 	-- The next letters the server brought, after a take that left some there.
-	card.goOn = Skin.Button(card, L.GO_ON, function()
-		local mode = goOn and goOn.mode
-		if mode then Start(mode) end
-	end, "main")
+	card.goOn = Skin.Button(card, L.GO_ON, function() ns.GoOn() end, "main")
 	Skin.Tooltip(card.goOn, L.GO_ON_DESC, "ANCHOR_RIGHT")
 	-- The gold alone; everything where the game has no such button.
 	card.goldButton = Skin.Button(card, L.MAIL_TAKE_GOLD, function() Start("gold") end, "main")
@@ -782,6 +842,7 @@ end
 
 -- The buttons as the take goes: the one taking says "Stop 12 / 40", the others wait; the bar under it.
 function ShowProgress()
+	TakeChanged()
 	if not card then return end
 	local buttons = { auction = card.auction.take, players = card.players.take, lost = card.lost.take, gold = card.goldButton,
 		all = card.allButton }
@@ -801,18 +862,20 @@ function ShowProgress()
 	end
 end
 
--- What a take did, on the card for a while (nil: put away).
+-- What a take did, on the card (or in Wanderer's mailbox: ns.saidText) for a while (nil: put away).
 local saidAt
 function Said(text)
-	if not card then return end
 	saidAt = text and GetTime() or nil
-	card.result:SetText(text or "")
+	ns.saidText = text
 	if text then
 		local at = saidAt
 		C_Timer.After(10, function()
 			if saidAt == at then Said(nil) end
 		end)
 	end
+	TakeChanged()
+	if not card then return end
+	card.result:SetText(text or "")
 	Summarize()
 end
 
@@ -821,8 +884,9 @@ function Summarize()
 	local settings = Settings()
 	local summary = On() and settings.summary
 	local buttons = ButtonsOn()
-	if not (MailFrame and MailFrame:IsShown() and (summary or buttons)) then
-		if running and not buttons then Finish() end
+	-- (Wanderer's mailbox in use: the card steps aside, its take going on there)
+	if InWindow() or not (MailFrame and MailFrame:IsShown() and (summary or buttons)) then
+		if running and not ns.TakesOn() then Finish() end
 		return card:Hide()
 	end
 	local held = Read()
@@ -916,11 +980,7 @@ function Summarize()
 		pieces[#pieces + 1] = { card.letter, GAP }
 	end
 	-- Going on past the 50 letters shown: offered once the server brought more, while some are left to take.
-	-- (the fewest seen since it ended: the last letters taken leave a moment after)
-	if goOn and not goOn.fresh then
-		if held.letters > goOn.shown then goOn.fresh = true else goOn.shown = held.letters end
-	end
-	local offer = buttons and not running and goOn ~= nil and goOn.fresh and Pieces(goOn.mode) > 0
+	local offer = buttons and GoOnOffered(held.letters)
 	card.goOn:SetShown(offer and true or false)
 	if offer then pieces[#pieces + 1] = { card.goOn, 8 } end
 	card.goldButton:SetShown(buttons)
@@ -986,16 +1046,20 @@ local function Guild()
 end
 
 -- Your other characters of this realm and side, the players written to lately, your friends, then your guild's
--- members online.
+-- members online. Then how many more there were (none left out unsaid).
 local function Recipients()
-	local list, seen = {}, {}
+	local list, seen, more = {}, {}, 0
 	local realm = Clean(Safe(GetRealmName))
 	local faction = Clean(Safe(UnitFactionGroup, "player"))
 	local me = Short(Clean(Safe(UnitName, "player")))
 	local function Add(entry)
 		local short = Short(entry.name)
-		if #list >= MAX_CHIPS or seen[short] or short == me or short == "" then return end
+		if seen[short] or short == me or short == "" then return end
 		seen[short] = true
+		if #list >= MAX_CHIPS then
+			more = more + 1
+			return
+		end
 		list[#list + 1] = entry
 	end
 	for _, who in ipairs(W.Characters(true)) do
@@ -1012,9 +1076,9 @@ local function Recipients()
 	for _, member in ipairs(Guild()) do
 		if member.online then Add({ name = member.name, label = member.name:match("^([^%-]+)"), tip = L.GUILD_TIP, class = member.class }) end
 	end
-	return list
+	return list, more
 end
-ns.Recipients = Recipients -- (tests)
+ns.Recipients = Recipients
 
 -- The recipient guard -----------------------------------------------------------------------------------------
 -- Inside the name's field, on its right: a quiet word when the letter carries gold or items to a name that is
@@ -1054,18 +1118,23 @@ local function Carried()
 	return cod and 0 or copper, cod and copper or 0, items
 end
 
--- The guard's word for the letter now, or nil.
-function ns.GuardText()
+-- The guard's word for a letter to name carrying gold, an amount to pay on delivery and items (true), or nil.
+function ns.GuardFor(name, gold, cod, items)
 	local settings = Settings()
 	if not (On() and settings.guard ~= false) then return nil end
-	local box = _G.SendMailNameEditBox
-	local name = box and Short(Clean(box:GetText()))
-	if not name or #name < 2 then return nil end
-	local gold, cod, items = Carried()
+	name = Short(Clean(name))
+	if #name < 2 then return nil end
 	local known = KnownNames()[name]
-	if cod > 0 and known == "mine" then return L.GUARD_COD_SELF end
-	if (gold > 0 or items) and not known then return L.GUARD_UNKNOWN end
+	if (cod or 0) > 0 and known == "mine" then return L.GUARD_COD_SELF end
+	if ((gold or 0) > 0 or items) and not known then return L.GUARD_UNKNOWN end
 	return nil
+end
+
+-- The guard's word for the letter written in the game's window now, or nil.
+function ns.GuardText()
+	local box = _G.SendMailNameEditBox
+	if not box then return nil end
+	return ns.GuardFor(box:GetText(), Carried())
 end
 
 local guard
@@ -1091,20 +1160,24 @@ local function ClassColor(class)
 	local gold = Skin.COLORS.gold
 	return gold[1], gold[2], gold[3]
 end
+ns.ClassColor = ClassColor
 
 -- The list of who to write to, as Postal and ElvUI offer it: a small arrow at the end of the name's field opens a
 -- clear list beside it (your characters in their class colour with their level, then the players written to
--- lately); a click writes the name, the field stays yours to type in.
-local function OpenRecipients(owner)
+-- lately); a click writes the name (pick(name): in Wanderer's mailbox, its own field), the field stays yours to
+-- type in.
+local function OpenRecipients(owner, pick)
 	local rows = {}
-	for _, who in ipairs(Recipients()) do
+	local list, more = Recipients()
+	for _, who in ipairs(list) do
 		local r, g, b = ClassColor(who.class)
 		local text = who.class and (U.ColorCode(r, g, b) .. (who.label or who.name) .. "|r") or (who.label or who.name)
 		rows[#rows + 1] = { text = text, hint = who.tip, glyph = who.mine and "chevron" or nil,
-			onClick = function() Pick(who.name) end }
+			onClick = function() (pick or Pick)(who.name) end }
 	end
 	if not rows[1] then return end
-	Skin.ActionCard(owner, { title = L.SEND_TO, rows = rows })
+	-- (more than the card holds: said at its foot, the name still yours to type)
+	Skin.ActionCard(owner, { title = L.SEND_TO, rows = rows, foot = more > 0 and L.SEND_TO_MORE:format(more) or nil })
 end
 ns.OpenRecipients = OpenRecipients -- (tests)
 
@@ -1131,7 +1204,7 @@ function ns.LetterFate(index, withDays)
 	if withDays then words = U.Ago(math.floor(daysLeft * DAY)) .. U.SEPARATOR .. words end
 	local items = Clean(hasItem)
 	local holds = (Clean(money) or 0) > 0 or (items ~= nil and items ~= false and items ~= 0)
-	return words, (holds and daysLeft < SOON_OTHERS) and "warn" or "muted"
+	return words, (holds and daysLeft < SOON_OTHERS) and "bad" or "muted" -- (gold or items about to go: in red)
 end
 
 local function MarkLetters()
@@ -1176,9 +1249,8 @@ local function Build()
 	chipRow = CreateFrame("Button", "WandererMailRecipients", box or MailFrame)
 	chipRow:SetSize(CHIP_HEIGHT, CHIP_HEIGHT)
 	if box then chipRow:SetPoint("LEFT", box, "RIGHT", 2, 0) else chipRow:SetPoint("TOPLEFT", MailFrame, "TOPLEFT", 80, -40) end
-	chipRow.glyph = Skin.Glyph(chipRow, "chevron", 10)
+	chipRow.glyph = Skin.Glyph(chipRow, "down", 10)
 	chipRow.glyph:SetPoint("CENTER")
-	if chipRow.glyph.SetRotation then chipRow.glyph:SetRotation(-math.pi / 2) end
 	chipRow:SetScript("OnClick", function(self) OpenRecipients(self) end)
 	Skin.Tooltip(chipRow, function() return L.SEND_TO_TIP end, "ANCHOR_TOP")
 	chipRow:Hide()
@@ -1214,7 +1286,7 @@ end
 
 function ns.Refresh()
 	if not built then return end
-	if running and not ButtonsOn() then Finish() end
+	if running and not ns.TakesOn() then Finish() end
 	Summarize()
 	LayoutChips()
 	ShowGuard()
@@ -1259,12 +1331,25 @@ function ns.Init()
 		slash = "/wmail",
 		title = L.ADDON,
 		news = L.NEWS_LINES,
-		defaults = { enabled = true, buttons = true, summary = true, recipients = true, leaving = true, soonestFirst = false, guard = true },
+		-- (window: Wanderer's mailbox in place of the game's; its default follows Postal and TradeSkillMaster until
+		-- you choose, see ns.WindowWanted)
+		defaults = { enabled = true, window = true, windowChosen = false, buttons = true, summary = true, recipients = true,
+			leaving = true, soonestFirst = false, guard = true },
 		refresh = function() ns.Refresh() end,
 		-- (the card first: what it says, then the buttons it holds)
 		options = function(o)
 			local enabled = o.Checkbox("mail", "enabled", L.ENABLE, L.ENABLE_DESC, ns.Refresh)
 			local on = o.IsOn("mail", "enabled")
+			-- (Wanderer's mailbox, Window.lua; an older Wanderer has the card only)
+			if ns.WindowWanted then
+				ns.WindowWanted()
+				o.Under(o.Checkbox("mail", "window", L.WINDOW_SETTING, L.WINDOW_SETTING_DESC, function()
+					local settings = Settings()
+					if settings then settings.windowChosen = true end
+					if ns.WindowSettingChanged then ns.WindowSettingChanged() end
+					ns.Refresh()
+				end), enabled, on)
+			end
 			o.Under(o.Checkbox("mail", "summary", L.SUMMARY, L.SUMMARY_DESC, ns.Refresh), enabled, on)
 			local buttons = o.Under(o.Checkbox("mail", "buttons", L.BUTTONS, L.BUTTONS_DESC, ns.Refresh), enabled, on)
 			o.Yield(buttons, "mailButtons")
@@ -1328,6 +1413,8 @@ function ns.Init()
 	end)
 	-- Wanderer's town card: its mailbox line (Town.lua).
 	if ns.InitTown then ns.InitTown() end
+	-- Wanderer's mailbox (Window.lua), in place of the game's window.
+	if ns.InitWindow then ns.InitWindow() end
 	-- At login, a moment after arriving (once): the letters of the others leaving soon.
 	local arrival = CreateFrame("Frame")
 	arrival:RegisterEvent("PLAYER_ENTERING_WORLD")
