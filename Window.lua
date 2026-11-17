@@ -157,7 +157,12 @@ local function Create()
 	-- The game's own window, and your money, on the right (the cog and the cross after them).
 	window.game = Skin.SmallButton(window, Skin.GlyphText("move", "label") .. " " .. L.GAME_WINDOW, function() ns.UseGame() end,
 		L.GAME_WINDOW_DESC)
-	window.game:SetPoint("TOPRIGHT", window, "TOPRIGHT", -(margin + 54), -margin + 2)
+	-- (the game look: the title in the game's bar; the button level with the cog, the chips on a line of their own
+	-- under it, the tabs under them: all higher by the title's room)
+	local gameLook = Skin.GameWindows and Skin.GameWindows()
+	window.gameLook = gameLook
+	if gameLook and window.cog then window.game:SetPoint("RIGHT", window.cog, "LEFT", -6, 0)
+	else window.game:SetPoint("TOPRIGHT", window, "TOPRIGHT", -(margin + 54), -margin + 2) end
 	window.money = Skin.Text(window, "GameTooltipText", "soft")
 	window.money:SetPoint("RIGHT", window.game, "LEFT", -18, 0)
 	-- What waits, in a row of chips under the title.
@@ -167,7 +172,7 @@ local function Create()
 	}
 	-- The tabs, over a thin rule.
 	local rule = Skin.Rule(window)
-	rule:SetPoint("TOPLEFT", window, "TOPLEFT", margin, -(margin + 100))
+	rule:SetPoint("TOPLEFT", window, "TOPLEFT", margin, -(margin + (gameLook and 67 or 100)))
 	rule:SetPoint("RIGHT", window, "RIGHT", -margin, 0)
 	window.tabs = Skin.Tabs(window, { { "inbox", L.TAB_RECEIVED }, { "write", L.TAB_WRITE } }, function(name) ns.ShowTab(name) end)
 	window.tabs:SetPoint("BOTTOMLEFT", rule, "TOPLEFT", 0, 0)
@@ -253,7 +258,10 @@ function ns.DrawHeading()
 		local chip = chips[key]
 		chip:ClearAllPoints()
 		if chip:IsShown() then
-			if previous then chip:SetPoint("LEFT", previous, "RIGHT", 6, 0) else chip:SetPoint("TOPLEFT", window.title, "BOTTOMLEFT", 0, -10) end
+			if previous then chip:SetPoint("LEFT", previous, "RIGHT", 6, 0)
+			-- (the game look: under the line of the cog and the buttons, 22 high from 3 under the top)
+			elseif window.gameLook then chip:SetPoint("TOPLEFT", window, "TOPLEFT", window.margin, -31)
+			else chip:SetPoint("TOPLEFT", window.title, "BOTTOMLEFT", 0, -10) end
 			previous = chip
 		end
 	end

@@ -825,7 +825,8 @@ end
 -- Its pieces stacked from the top, those shown only; its height to fit them.
 local function Stack(pieces)
 	local m = card.margin
-	local y = -(m + 40)
+	-- (the game look: the title in the game's bar, the first piece just under the cog: the card that much shorter)
+	local y = -(m + ((Skin.GameWindows and Skin.GameWindows()) and 8 or 40))
 	for _, piece in ipairs(pieces) do
 		local frame, gap = piece[1], piece[2] or 4
 		frame:ClearAllPoints()
