@@ -146,11 +146,18 @@ local function Square(parent)
 	square.icon = Skin.Icon(square, SQUARE)
 	square.icon:SetAllPoints()
 	-- (on the icon: the kit's icon is a frame of its own, above what the square draws)
-	square.count = Skin.Text(square.icon, "GameTooltipTextSmall", "text")
+	local game = Skin.GameWindows()
+	-- (the game look: the count in the game's number font, its square's light under the mouse, as its item buttons)
+	square.count = game and square.icon:CreateFontString(nil, "OVERLAY", "NumberFontNormal") or Skin.Text(square.icon, "GameTooltipTextSmall", "text")
 	square.count:SetPoint("BOTTOMRIGHT", square, "BOTTOMRIGHT", -3, 3)
 	local hover = square.icon:CreateTexture(nil, "OVERLAY")
 	hover:SetAllPoints()
-	hover:SetColorTexture(1, 1, 1, Skin.HOVER)
+	if game then
+		hover:SetTexture("Interface\\Buttons\\ButtonHilight-Square")
+		hover:SetBlendMode("ADD")
+	else
+		hover:SetColorTexture(1, 1, 1, Skin.HOVER)
+	end
 	hover:Hide()
 	square.hover = hover
 	square:SetScript("OnEnter", function(self)
