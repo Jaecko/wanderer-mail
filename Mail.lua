@@ -765,6 +765,8 @@ local function BuildCard()
 		_G.OpenMailFrame:HookScript("OnShow", Letter)
 		_G.OpenMailFrame:HookScript("OnHide", Letter)
 	end
+	-- (the game look: the game's frame as its window's, its title in the bar)
+	if Skin.GameWindows and Skin.GameWindows() and Skin.GameFrame then Skin.GameFrame(card) end
 	local _, _, margin = Skin.Header(card, "Wanderer", L.CARD_TITLE, { settings = "ext:mail" })
 	card.margin = margin
 	-- What the inbox holds.
